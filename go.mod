@@ -1,4 +1,4 @@
-module etcd
+module github.com/ianzhang366/etcd-replayer
 
 go 1.16
 
@@ -9,6 +9,5 @@ require (
 	k8s.io/api v0.21.3
 	k8s.io/apimachinery v0.21.3
 	k8s.io/client-go v0.21.3
-	open-cluster-management.io/api v0.0.0-20210727123024-41c7397e9f2d
 	sigs.k8s.io/controller-runtime v0.9.3
 )
