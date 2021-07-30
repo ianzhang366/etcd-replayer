@@ -1,0 +1,43 @@
+{
+1. etcd compact behaviour
+https://etcd.io/docs/v3.5/op-guide/maintenance/#auto-compaction
+
+2. client verse connection(it seems the controller-runtime provide 1 connections...)
+
+client -> typedClient -> clientCache.newResource() ->  RESTClientForGVK -> RESTClientFor -> RESTClient(client-go)
+
+clientCache.newResource()
+/Users/ianzhang/golang/pkg/mod/sigs.k8s.io/controller-runtime@v0.9.2/pkg/client/client_cache.go:62
+
+NewRESTClient
+/Users/ianzhang/golang/pkg/mod/k8s.io/client-go@v0.21.2/rest/client.go:81:6-81:16
+
+RESTClientForGVK
+/Users/ianzhang/golang/pkg/mod/sigs.k8s.io/controller-runtime@v0.9.2/pkg/client/apiutil/apimachinery.go:120
+
+RESTClient
+/Users/ianzhang/golang/pkg/mod/k8s.io/client-go@v0.21.2/rest/config.go:306
+
+http.DefaultTransport
+// DefaultTransport is the default implementation of Transport and is
+// used by DefaultClient. It establishes network connections as needed
+// and caches them for reuse by subsequent calls. It uses HTTP proxies
+// as directed by the $HTTP_PROXY and $NO_PROXY (or $http_proxy and
+// $no_proxy) environment variables.
+/usr/local/Cellar/go/1.16.3/libexec/src/net/http/transport.go:42
+
+how to increase the max connection?
+https://www.loginradius.com/blog/async/tune-the-go-http-client-for-high-performance/
+
+
+3. etcd metrics
+https://etcd.io/docs/v3.4/metrics/etcd-metrics-v3.4.8.txt
+}
+
+- size
+- connection
+	- single connection (api server limit, retry)
+	- multiple
+
+
+ztp-1k-prometheus-backup

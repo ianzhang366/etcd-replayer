@@ -74,31 +74,20 @@ func main() {
 		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
 	}()
 
-	runners := []*Runner{}
-
 	now := time.Now()
 	for idx := 0; idx < *concurentNum; idx++ {
-		t := NewRunner(
+		wg.Add(1)
+		go NewRunner(
 			WithNameSuffix(idx),
 			WithClient(*kubeconfig, logger),
 			WithTemplate(w),
 			WithStop(stop),
 			WithWaitGroup(wg),
-			WithLogger(logger))
+			WithLogger(logger)).run()
 
-		t.initial()
-		t.create()
-
-		runners = append(runners, t)
 	}
 
-	logger.Info(fmt.Sprintf("created %v templates in %v seconds", len(runners), time.Now().Sub(now).Seconds()))
-
-	for _, r := range runners {
-		go r.update()
-
-		wg.Add(1)
-	}
+	logger.Info(fmt.Sprintf("created %v templates in %v seconds", *concurentNum, time.Now().Sub(now).Seconds()))
 
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -106,16 +95,8 @@ func main() {
 	dur := time.Duration(*duration) * time.Second
 	timeout := time.After(dur)
 
-	defer func() {
-
-	}()
-
 	cleanUp := func() {
 		close(stop)
-		for _, r := range runners {
-			wg.Add(1)
-			go r.delete(wg)
-		}
 	}
 
 	select {
@@ -227,6 +208,13 @@ func WithStop(stop chan struct{}) Option {
 	}
 }
 
+func (r *Runner) run() {
+	r.initial()
+	r.create()
+
+	r.update()
+}
+
 func (r *Runner) initial() {
 	payload := r.template.DeepCopy()
 
@@ -282,8 +270,7 @@ func (r *Runner) getKey() types.NamespacedName {
 
 }
 
-func (r *Runner) delete(wg *sync.WaitGroup) {
-	defer wg.Done()
+func (r *Runner) delete() {
 	ctx := context.TODO()
 	if err := r.Client.Delete(ctx, r.template.DeepCopy()); err != nil {
 		r.logger.Error(err, fmt.Sprintf("failed to delete manifestwork: %s", r.getKey()))
@@ -300,51 +287,47 @@ func (r *Runner) delete(wg *sync.WaitGroup) {
 }
 
 func (r *Runner) update() {
-	r.logger.Info(fmt.Sprintf("start to run %s", r.name))
-
 	ctx := context.TODO()
 
 	key := r.getKey()
 
-	go func() {
-		suffix := 1
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
+	suffix := 1
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
-		defer func() {
+	defer func() {
+		r.delete()
+		r.wg.Done()
+	}()
 
-			r.wg.Done()
-		}()
+	for {
+		select {
+		case <-r.stop:
+			return
 
-		for {
-			select {
-			case <-r.stop:
-				return
+		case <-ticker.C:
+			if err := r.Client.Get(ctx, key, r.template); err != nil {
+				r.logger.Error(err, "failed to Get")
+				continue
+			}
 
-			case <-ticker.C:
-				if err := r.Client.Get(ctx, key, r.template); err != nil {
-					r.logger.Error(err, "failed to Get")
-					continue
-				}
+			originalIns := r.template.DeepCopy()
 
-				originalIns := r.template.DeepCopy()
+			labels := r.template.GetLabels()
 
-				labels := r.template.GetLabels()
+			if labels == nil {
+				labels = map[string]string{}
+			}
 
-				if labels == nil {
-					labels = map[string]string{}
-				}
+			// Update the ReplicaSet
+			labels["hello"] = fmt.Sprintf("world-%v", suffix)
+			suffix += 1
 
-				// Update the ReplicaSet
-				labels["hello"] = fmt.Sprintf("world-%v", suffix)
-				suffix += 1
+			r.template.SetLabels(labels)
 
-				r.template.SetLabels(labels)
-
-				if err := r.Client.Patch(context.TODO(), r.template, client.MergeFrom(originalIns)); err != nil {
-					r.logger.Error(err, "failed to update")
-				}
+			if err := r.Client.Patch(context.TODO(), r.template, client.MergeFrom(originalIns)); err != nil {
+				r.logger.Error(err, "failed to update")
 			}
 		}
-	}()
+	}
 }
