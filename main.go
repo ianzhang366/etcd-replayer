@@ -20,7 +20,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/transport"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -150,16 +152,41 @@ type Runner struct {
 }
 
 func WithClient(kubeconfig string, logger logr.Logger) Option {
-	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		logger.Error(err, "failed to load rest.Config")
 		os.Exit(1)
 	}
 
-	cfg.QPS = 200.0
-	cfg.Burst = 400
+	config.QPS = 200.0
+	config.Burst = 400
 
-	cl, err := client.New(cfg, client.Options{})
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 10
+	t.MaxConnsPerHost = 10
+	t.MaxIdleConnsPerHost = 10
+
+	transportConfig, err := config.TransportConfig()
+	if err != nil {
+		logger.Error(err, "failed to get TransportConfig")
+		os.Exit(1)
+	}
+
+	tlsConfig, err := transport.TLSConfigFor(transportConfig)
+	if err != nil {
+		logger.Error(err, "failed to create tlsConfig")
+		os.Exit(1)
+	}
+
+	tlsConfig.InsecureSkipVerify = true
+
+	t.TLSClientConfig = tlsConfig
+	config.Transport = t
+
+	// make sure the config TLSClientConfig won't override the custom Transport
+	config.TLSClientConfig = restclient.TLSClientConfig{}
+
+	cl, err := client.New(config, client.Options{})
 	if err != nil {
 		logger.Error(err, "failed to create client.Client")
 		os.Exit(1)
