@@ -45,6 +45,8 @@ func main() {
 	kubeconfig := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file")
 	concurentNum := flag.Int("n", 10, "number of concurrent clients")
 	duration := flag.Int("d", 10, "duration for running this test, in second")
+	clean := flag.Bool("c", false, "only do clean up operation")
+
 	path := "./manifestwork-template.yaml"
 
 	flag.Parse()
@@ -68,22 +70,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info(fmt.Sprintf("testing at %v(duration), %v(concurrent update client numbers)", *duration, *concurentNum))
+	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers)", *duration, *concurentNum))
 
-	go func() {
-		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
-	}()
+	//	go func() {
+	//		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
+	//	}()
 
 	now := time.Now()
 	for idx := 0; idx < *concurentNum; idx++ {
+		i := idx
 		wg.Add(1)
 		go NewRunner(
-			WithNameSuffix(idx),
-			WithClient(*kubeconfig, logger),
+			WithNameSuffix(i),
 			WithTemplate(w),
 			WithStop(stop),
 			WithWaitGroup(wg),
-			WithLogger(logger)).run()
+			WithKubeconfig(*kubeconfig),
+			WithLogger(logger)).run(*clean)
 
 	}
 
@@ -99,6 +102,12 @@ func main() {
 		close(stop)
 	}
 
+	defer wg.Wait()
+
+	if *clean {
+		return
+	}
+
 	select {
 	case <-c:
 		logger.Info("system interrupt")
@@ -108,7 +117,6 @@ func main() {
 
 	cleanUp()
 
-	wg.Wait()
 }
 
 type Option func(*Runner)
@@ -124,7 +132,8 @@ func NewRunner(ops ...Option) *Runner {
 }
 
 type Runner struct {
-	name string
+	name   string
+	config string
 	client.Client
 	template *unstructured.Unstructured
 	stop     chan struct{}
@@ -132,20 +141,19 @@ type Runner struct {
 	wg       *sync.WaitGroup
 }
 
-func WithClient(kubeconfig string, logger logr.Logger) Option {
+func (r *Runner) configClient(kubeconfig string, logger logr.Logger) error {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		logger.Error(err, "failed to load rest.Config")
 		os.Exit(1)
 	}
 
-	config.QPS = 200.0
-	config.Burst = 400
-
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 10
-	t.MaxConnsPerHost = 10
-	t.MaxIdleConnsPerHost = 10
+	t.MaxIdleConns = 5
+	t.MaxConnsPerHost = 5
+	t.MaxIdleConnsPerHost = 5
+	t.TLSHandshakeTimeout = 0
+	// t.ResponseHeaderTimeout = time.Second * 10
 
 	transportConfig, err := config.TransportConfig()
 	if err != nil {
@@ -166,15 +174,21 @@ func WithClient(kubeconfig string, logger logr.Logger) Option {
 
 	// make sure the config TLSClientConfig won't override the custom Transport
 	config.TLSClientConfig = restclient.TLSClientConfig{}
-
+	config.QPS = 200.0
+	config.Burst = 400
 	cl, err := client.New(config, client.Options{})
 	if err != nil {
-		logger.Error(err, "failed to create client.Client")
-		os.Exit(1)
+		return err
 	}
 
+	r.Client = cl
+
+	return nil
+}
+
+func WithKubeconfig(k string) Option {
 	return func(r *Runner) {
-		r.Client = cl
+		r.config = k
 	}
 }
 
@@ -208,14 +222,23 @@ func WithStop(stop chan struct{}) Option {
 	}
 }
 
-func (r *Runner) run() {
-	r.initial()
-	r.create()
+func (r *Runner) run(cleanUp bool) {
+	if err := r.initial(); err != nil {
+		r.logger.Error(err, fmt.Sprintf("failed to inital runner: %s", r.name))
+		r.wg.Done()
+		return
+	}
 
+	if cleanUp {
+		r.delete()
+		return
+	}
+
+	r.create()
 	r.update()
 }
 
-func (r *Runner) initial() {
+func (r *Runner) initial() error {
 	payload := r.template.DeepCopy()
 
 	ns := &corev1.Namespace{
@@ -233,6 +256,8 @@ func (r *Runner) initial() {
 	payload.SetName(key.Name)
 
 	r.template = payload.DeepCopy()
+
+	return r.configClient(r.config, r.logger)
 }
 
 func (r *Runner) create() {
@@ -271,9 +296,14 @@ func (r *Runner) getKey() types.NamespacedName {
 }
 
 func (r *Runner) delete() {
+	defer r.wg.Done()
+
 	ctx := context.TODO()
 	if err := r.Client.Delete(ctx, r.template.DeepCopy()); err != nil {
-		r.logger.Error(err, fmt.Sprintf("failed to delete manifestwork: %s", r.getKey()))
+		if !k8serrors.IsNotFound(err) {
+			r.logger.Error(err, fmt.Sprintf("failed to delete manifestwork: %s", r.getKey()))
+			return
+		}
 	}
 
 	ns := &corev1.Namespace{
@@ -281,9 +311,15 @@ func (r *Runner) delete() {
 			Name: r.template.GetNamespace(),
 		},
 	}
+
 	if err := r.Client.Delete(ctx, ns); err != nil {
-		r.logger.Error(err, "failed to delete namespace")
+		if !k8serrors.IsNotFound(err) {
+			r.logger.Error(err, "failed to delete namespace")
+			return
+		}
 	}
+
+	// r.logger.Info(fmt.Sprintf("deleted %s", r.name))
 }
 
 func (r *Runner) update() {
@@ -293,11 +329,10 @@ func (r *Runner) update() {
 
 	suffix := 1
 	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
 
 	defer func() {
 		r.delete()
-		r.wg.Done()
+		ticker.Stop()
 	}()
 
 	for {
@@ -308,6 +343,9 @@ func (r *Runner) update() {
 		case <-ticker.C:
 			if err := r.Client.Get(ctx, key, r.template); err != nil {
 				r.logger.Error(err, "failed to Get")
+				if k8serrors.IsNotFound(err) {
+					r.create()
+				}
 				continue
 			}
 
