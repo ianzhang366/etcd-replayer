@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"net/http"
-	_ "net/http/pprof"
+	//	_ "net/http/pprof"
 )
 
 var (
@@ -43,9 +43,9 @@ func init() {
 
 func main() {
 	kubeconfig := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file")
-	concurentNum := flag.Int("n", 10, "number of concurrent clients")
-	duration := flag.Int("d", 10, "duration for running this test, in second")
-	clean := flag.Bool("c", false, "only do clean up operation")
+	concurentNum := flag.Int("concurrent", 10, "number of concurrent clients")
+	duration := flag.Int("duration", 10, "duration for running this test, in second")
+	clean := flag.Bool("clean", false, "only do clean up operation")
 
 	path := "./manifestwork-template.yaml"
 
@@ -70,11 +70,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers)", *duration, *concurentNum))
+	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on %v", *duration, *concurentNum, *clean))
 
 	//	go func() {
 	//		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
 	//	}()
+
+	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	if err != nil {
+		logger.Error(err, "failed to load rest.Config")
+		os.Exit(1)
+	}
 
 	now := time.Now()
 	for idx := 0; idx < *concurentNum; idx++ {
@@ -85,7 +91,7 @@ func main() {
 			WithTemplate(w),
 			WithStop(stop),
 			WithWaitGroup(wg),
-			WithKubeconfig(*kubeconfig),
+			WithClient(restclient.CopyConfig(config), logger),
 			WithLogger(logger)).run(*clean)
 
 	}
@@ -132,8 +138,7 @@ func NewRunner(ops ...Option) *Runner {
 }
 
 type Runner struct {
-	name   string
-	config string
+	name string
 	client.Client
 	template *unstructured.Unstructured
 	stop     chan struct{}
@@ -141,30 +146,26 @@ type Runner struct {
 	wg       *sync.WaitGroup
 }
 
-func (r *Runner) configClient(kubeconfig string, logger logr.Logger) error {
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		logger.Error(err, "failed to load rest.Config")
-		os.Exit(1)
-	}
+func WithClient(config *restclient.Config, logger logr.Logger) Option {
+	config.QPS = 500.0
+	config.Burst = 1000
 
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 5
-	t.MaxConnsPerHost = 5
-	t.MaxIdleConnsPerHost = 5
-	t.TLSHandshakeTimeout = 0
+	t.MaxIdleConns = 10
+	t.MaxConnsPerHost = 10
+	t.MaxIdleConnsPerHost = 10
+	// t.TLSHandshakeTimeout = 0
 	// t.ResponseHeaderTimeout = time.Second * 10
 
 	transportConfig, err := config.TransportConfig()
 	if err != nil {
 		logger.Error(err, "failed to get TransportConfig")
-		os.Exit(1)
 	}
 
 	tlsConfig, err := transport.TLSConfigFor(transportConfig)
 	if err != nil {
 		logger.Error(err, "failed to create tlsConfig")
-		os.Exit(1)
+		return func(r *Runner) {}
 	}
 
 	tlsConfig.InsecureSkipVerify = true
@@ -174,21 +175,16 @@ func (r *Runner) configClient(kubeconfig string, logger logr.Logger) error {
 
 	// make sure the config TLSClientConfig won't override the custom Transport
 	config.TLSClientConfig = restclient.TLSClientConfig{}
-	config.QPS = 200.0
-	config.Burst = 400
+
 	cl, err := client.New(config, client.Options{})
 	if err != nil {
-		return err
+		logger.Error(err, "failed to create tlsConfig")
+
+		return func(r *Runner) {}
 	}
 
-	r.Client = cl
-
-	return nil
-}
-
-func WithKubeconfig(k string) Option {
 	return func(r *Runner) {
-		r.config = k
+		r.Client = cl
 	}
 }
 
@@ -223,22 +219,28 @@ func WithStop(stop chan struct{}) Option {
 }
 
 func (r *Runner) run(cleanUp bool) {
-	if err := r.initial(); err != nil {
-		r.logger.Error(err, fmt.Sprintf("failed to inital runner: %s", r.name))
-		r.wg.Done()
-		return
-	}
+	r.initial()
 
 	if cleanUp {
 		r.delete()
 		return
 	}
 
-	r.create()
+	if r.Client == nil {
+		r.wg.Done()
+		return
+	}
+
+	if err := r.create(); err != nil {
+		r.logger.Error(err, "failed to create resource")
+		r.wg.Done()
+		return
+	}
+
 	r.update()
 }
 
-func (r *Runner) initial() error {
+func (r *Runner) initial() {
 	payload := r.template.DeepCopy()
 
 	ns := &corev1.Namespace{
@@ -257,10 +259,10 @@ func (r *Runner) initial() error {
 
 	r.template = payload.DeepCopy()
 
-	return r.configClient(r.config, r.logger)
+	return
 }
 
-func (r *Runner) create() {
+func (r *Runner) create() error {
 	ctx := context.TODO()
 
 	ns := &corev1.Namespace{
@@ -272,7 +274,7 @@ func (r *Runner) create() {
 	if err := r.Client.Create(ctx, ns); err != nil {
 		if !k8serrors.IsAlreadyExists(err) {
 			r.logger.Error(err, "failed to create namespace")
-			return
+			return err
 		}
 
 	}
@@ -280,11 +282,12 @@ func (r *Runner) create() {
 	if err := r.Client.Create(ctx, r.template.DeepCopy()); err != nil {
 		if !k8serrors.IsAlreadyExists(err) {
 			r.logger.Error(err, fmt.Sprintf("failed to create manifestwork: %s ", r.getKey()))
-			return
+			return err
 		}
 	}
 
 	//r.logger.Info(fmt.Sprintf("created %s", key))
+	return nil
 }
 
 func (r *Runner) getKey() types.NamespacedName {
@@ -343,9 +346,7 @@ func (r *Runner) update() {
 		case <-ticker.C:
 			if err := r.Client.Get(ctx, key, r.template); err != nil {
 				r.logger.Error(err, "failed to Get")
-				if k8serrors.IsNotFound(err) {
-					r.create()
-				}
+
 				continue
 			}
 
