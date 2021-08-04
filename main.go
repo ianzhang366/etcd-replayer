@@ -37,8 +37,6 @@ var (
 
 func init() {
 	log.SetLogger(zap.New(zap.RawZapOpts(uzap.AddCallerSkip(1)), zap.UseDevMode(true)))
-	// SchemeGroupVersion is group version used to register these objects
-
 }
 
 func main() {
@@ -70,7 +68,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on %v", *duration, *concurentNum, *clean))
+	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on clean == %v", *duration, *concurentNum, *clean))
 
 	//	go func() {
 	//		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
@@ -84,10 +82,9 @@ func main() {
 
 	now := time.Now()
 	for idx := 0; idx < *concurentNum; idx++ {
-		i := idx
 		wg.Add(1)
 		go NewRunner(
-			WithNameSuffix(i),
+			WithNameSuffix(idx),
 			WithTemplate(w),
 			WithStop(stop),
 			WithWaitGroup(wg),
@@ -122,7 +119,6 @@ func main() {
 	}
 
 	cleanUp()
-
 }
 
 type Option func(*Runner)
@@ -151,11 +147,9 @@ func WithClient(config *restclient.Config, logger logr.Logger) Option {
 	config.Burst = 1000
 
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 10
-	t.MaxConnsPerHost = 10
-	t.MaxIdleConnsPerHost = 10
-	// t.TLSHandshakeTimeout = 0
-	// t.ResponseHeaderTimeout = time.Second * 10
+	t.MaxIdleConns = 100
+	t.MaxConnsPerHost = 100
+	t.MaxIdleConnsPerHost = 100
 
 	transportConfig, err := config.TransportConfig()
 	if err != nil {
@@ -286,7 +280,6 @@ func (r *Runner) create() error {
 		}
 	}
 
-	//r.logger.Info(fmt.Sprintf("created %s", key))
 	return nil
 }
 
@@ -321,8 +314,6 @@ func (r *Runner) delete() {
 			return
 		}
 	}
-
-	// r.logger.Info(fmt.Sprintf("deleted %s", r.name))
 }
 
 func (r *Runner) update() {
