@@ -20,6 +20,9 @@ spec:
       verbs:
       - '*'
     subjects:
+    - group:
+        name: system:authenticated
+      kind: Group
     - kind: User
       user:
         name: admin
