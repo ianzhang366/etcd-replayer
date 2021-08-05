@@ -32,6 +32,12 @@ https://www.loginradius.com/blog/async/tune-the-go-http-client-for-high-performa
 
 3. etcd metrics
 https://etcd.io/docs/v3.4/metrics/etcd-metrics-v3.4.8.txt
+
+etcd_object_counts{resource=~"manifestwork.*"}
+sum(rate(apiserver_request_total{resource ="manifestworks"}[1m])) by(resource, verb)
+
+etcd_mvcc_db_total_size_in_use_in_bytes
+etcd_debugging_mvcc_db_compaction_keys_total
 }
 
 - size

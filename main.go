@@ -192,7 +192,7 @@ func (r *Runner) configClient() error {
 
 	tlsConfig, err := transport.TLSConfigFor(transportConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create tlsConfig, error: %w", err)
+		return fmt.Errorf("%s failed to create tlsConfig, error: %w", r.name, err)
 	}
 
 	tlsConfig.InsecureSkipVerify = true
