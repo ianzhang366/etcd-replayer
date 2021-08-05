@@ -319,7 +319,7 @@ func (r *Runner) update() {
 	cnt := 0
 	for err := r.configClient(); err != nil; err = r.configClient() {
 		r.logger.Error(err, "failed to create client")
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 
 		cnt += 1
 		if cnt == 30 {

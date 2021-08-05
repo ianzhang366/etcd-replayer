@@ -47,3 +47,10 @@ etcd_debugging_mvcc_db_compaction_keys_total
 
 
 ztp-1k-prometheus-backup
+
+{ - apf
+
+kubectl get flowsschema
+kubectl get prioritylevelconfiguration
+kubectl apply -f manifestwork-template.yaml --v=8 2>&1 | grep -i x-kubernetes-pf
+}
