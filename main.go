@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"net/http"
-		_ "net/http/pprof"
+	_ "net/http/pprof"
 )
 
 var (
@@ -67,9 +67,9 @@ func main() {
 		os.Exit(1)
 	}
 
-		go func() {
-					logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
-						}()
+	go func() {
+		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
+	}()
 
 	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on clean == %v", *duration, *concurentNum, *clean))
 
@@ -178,7 +178,6 @@ func (r *Runner) configClient() error {
 	if err != nil {
 		return fmt.Errorf("failed to load rest.Config, error: %w", err)
 	}
-
 
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 10
