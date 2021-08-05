@@ -44,8 +44,7 @@ func main() {
 	concurentNum := flag.Int("concurrent", 10, "number of concurrent clients")
 	duration := flag.Int("duration", 10, "duration for running this test, in second")
 	clean := flag.Bool("clean", false, "only do clean up operation")
-
-	path := "./manifestwork-template.yaml"
+	tmeplate := flag.String("template", "./manifestwork-template.yaml", "path to the template file")
 
 	flag.Parse()
 
@@ -57,7 +56,7 @@ func main() {
 
 	w := &unstructured.Unstructured{}
 
-	dat, err := ioutil.ReadFile(path)
+	dat, err := ioutil.ReadFile(*tmeplate)
 	if err != nil {
 		logger.Error(err, "failed to read template")
 		os.Exit(1)
@@ -70,26 +69,17 @@ func main() {
 
 	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on clean == %v", *duration, *concurentNum, *clean))
 
-	//	go func() {
-	//		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
-	//	}()
-
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
-	if err != nil {
-		logger.Error(err, "failed to load rest.Config")
-		os.Exit(1)
-	}
-
 	now := time.Now()
 	for idx := 0; idx < *concurentNum; idx++ {
-		wg.Add(1)
+		idx := idx
 		go NewRunner(
 			WithNameSuffix(idx),
 			WithTemplate(w),
 			WithStop(stop),
 			WithWaitGroup(wg),
-			WithClient(restclient.CopyConfig(config), logger),
-			WithLogger(logger)).run(*clean)
+			WithLogger(logger),
+			WithKubePath(*kubeconfig),
+		).run(*clean)
 
 	}
 
@@ -134,7 +124,8 @@ func NewRunner(ops ...Option) *Runner {
 }
 
 type Runner struct {
-	name string
+	name       string
+	kubeconfig string
 	client.Client
 	template *unstructured.Unstructured
 	stop     chan struct{}
@@ -142,43 +133,9 @@ type Runner struct {
 	wg       *sync.WaitGroup
 }
 
-func WithClient(config *restclient.Config, logger logr.Logger) Option {
-	config.QPS = 500.0
-	config.Burst = 1000
-
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 100
-	t.MaxConnsPerHost = 100
-	t.MaxIdleConnsPerHost = 100
-
-	transportConfig, err := config.TransportConfig()
-	if err != nil {
-		logger.Error(err, "failed to get TransportConfig")
-	}
-
-	tlsConfig, err := transport.TLSConfigFor(transportConfig)
-	if err != nil {
-		logger.Error(err, "failed to create tlsConfig")
-		return func(r *Runner) {}
-	}
-
-	tlsConfig.InsecureSkipVerify = true
-
-	t.TLSClientConfig = tlsConfig
-	config.Transport = t
-
-	// make sure the config TLSClientConfig won't override the custom Transport
-	config.TLSClientConfig = restclient.TLSClientConfig{}
-
-	cl, err := client.New(config, client.Options{})
-	if err != nil {
-		logger.Error(err, "failed to create tlsConfig")
-
-		return func(r *Runner) {}
-	}
-
+func WithKubePath(kubeconfig string) Option {
 	return func(r *Runner) {
-		r.Client = cl
+		r.kubeconfig = kubeconfig
 	}
 }
 
@@ -212,6 +169,49 @@ func WithStop(stop chan struct{}) Option {
 	}
 }
 
+func (r *Runner) configClient() error {
+	config, err := clientcmd.BuildConfigFromFlags("", r.kubeconfig)
+	if err != nil {
+		return fmt.Errorf("failed to load rest.Config, error: %w", err)
+	}
+
+	config.QPS = 500.0
+	config.Burst = 1000
+
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 10
+	t.MaxConnsPerHost = 10
+	t.MaxIdleConnsPerHost = 10
+
+	transportConfig, err := config.TransportConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get TransportConfig, error: %w", err)
+
+	}
+
+	tlsConfig, err := transport.TLSConfigFor(transportConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create tlsConfig, error: %w", err)
+	}
+
+	tlsConfig.InsecureSkipVerify = true
+
+	t.TLSClientConfig = tlsConfig
+	config.Transport = t
+
+	// make sure the config TLSClientConfig won't override the custom Transport
+	config.TLSClientConfig = restclient.TLSClientConfig{}
+
+	cl, err := client.New(config, client.Options{})
+	if err != nil {
+		return fmt.Errorf("failed to create tlsConfig, error: %w", err)
+	}
+
+	r.Client = cl
+
+	return nil
+}
+
 func (r *Runner) run(cleanUp bool) {
 	r.initial()
 
@@ -220,18 +220,13 @@ func (r *Runner) run(cleanUp bool) {
 		return
 	}
 
-	if r.Client == nil {
-		r.wg.Done()
-		return
-	}
+	go func() {
+		r.wg.Add(1)
 
-	if err := r.create(); err != nil {
-		r.logger.Error(err, "failed to create resource")
-		r.wg.Done()
-		return
-	}
+		r.update()
 
-	r.update()
+		r.wg.Done()
+	}()
 }
 
 func (r *Runner) initial() {
@@ -292,8 +287,6 @@ func (r *Runner) getKey() types.NamespacedName {
 }
 
 func (r *Runner) delete() {
-	defer r.wg.Done()
-
 	ctx := context.TODO()
 	if err := r.Client.Delete(ctx, r.template.DeepCopy()); err != nil {
 		if !k8serrors.IsNotFound(err) {
@@ -317,12 +310,30 @@ func (r *Runner) delete() {
 }
 
 func (r *Runner) update() {
+	r.logger.Info(r.name)
+
+	cnt := 0
+	for err := r.configClient(); err != nil; err = r.configClient() {
+		r.logger.Error(err, "failed to create client")
+		time.Sleep(100 * time.Millisecond)
+
+		cnt += 1
+		if cnt == 30 {
+			return
+		}
+	}
+
+	if err := r.create(); err != nil {
+		r.logger.Error(err, "failed to create resource")
+		return
+	}
+
 	ctx := context.TODO()
 
 	key := r.getKey()
 
 	suffix := 1
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(5 * time.Millisecond)
 
 	defer func() {
 		r.delete()
@@ -332,6 +343,7 @@ func (r *Runner) update() {
 	for {
 		select {
 		case <-r.stop:
+			r.logger.Info(fmt.Sprintf("stop and delete %s", r.name))
 			return
 
 		case <-ticker.C:
