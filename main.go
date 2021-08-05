@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"net/http"
-	//	_ "net/http/pprof"
+		_ "net/http/pprof"
 )
 
 var (
@@ -66,6 +66,10 @@ func main() {
 		logger.Error(err, "failed to parse template")
 		os.Exit(1)
 	}
+
+		go func() {
+					logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
+						}()
 
 	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on clean == %v", *duration, *concurentNum, *clean))
 
@@ -175,8 +179,6 @@ func (r *Runner) configClient() error {
 		return fmt.Errorf("failed to load rest.Config, error: %w", err)
 	}
 
-	config.QPS = 500.0
-	config.Burst = 1000
 
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 10
@@ -201,6 +203,9 @@ func (r *Runner) configClient() error {
 
 	// make sure the config TLSClientConfig won't override the custom Transport
 	config.TLSClientConfig = restclient.TLSClientConfig{}
+
+	config.QPS = 500.0
+	config.Burst = 1000
 
 	cl, err := client.New(config, client.Options{})
 	if err != nil {
