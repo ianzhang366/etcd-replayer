@@ -72,7 +72,7 @@ func main() {
 		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
 	}()
 
-	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on clean == %v", *duration, *concurentNum, *clean))
+	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on clean == %v, update == %v", *duration, *concurentNum, *clean, *update))
 
 	now := time.Now()
 	for idx := 0; idx < *concurentNum; idx++ {
@@ -318,6 +318,8 @@ func (r *Runner) delete() {
 			return
 		}
 	}
+
+	defer r.logger.Info(fmt.Sprintf("deleted %s", r.name))
 
 	ctx := context.TODO()
 	if err := r.Client.Delete(ctx, r.template.DeepCopy()); err != nil {
