@@ -45,6 +45,8 @@ etcd_debugging_mvcc_db_compaction_keys_total
 	- single connection (api server limit, retry)
 	- multiple
 
+ulimit -n
+
 
 ztp-1k-prometheus-backup
 
@@ -54,3 +56,16 @@ kubectl get flowsschema
 kubectl get prioritylevelconfiguration
 kubectl apply -f manifestwork-template.yaml --v=8 2>&1 | grep -i x-kubernetes-pf
 }
+
+go tool pprof -http=:8989 http://localhost:6060/debug/pprof/goroutine
+
+
+oc rsh -n openshift-etcd etcd-e24-h05-000-r640.rdu2.scalelab.redhat.com
+
+unset ETCDCTL_ENDPOINTS
+
+etcdctl compact $(etcdctl endpoint status --write-out="json" |  egrep -o '"revision":[0-9]*' | egrep -o '[0-9]*' -m1)
+
+date && etcdctl --command-timeout=120s defrag
+
+https://10.0.173.119:2379,https://10.0.135.152:2379,https://10.0.153.249:2379
