@@ -44,6 +44,7 @@ func main() {
 	concurentNum := flag.Int("concurrent", 10, "number of concurrent clients")
 	duration := flag.Int("duration", 10, "duration for running this test, in second")
 	clean := flag.Bool("clean", false, "only do clean up operation")
+	update := flag.Bool("update", true, "do continous update after creation")
 	tmeplate := flag.String("template", "./manifestwork-template.yaml", "path to the template file")
 
 	flag.Parse()
@@ -83,11 +84,13 @@ func main() {
 			WithWaitGroup(wg),
 			WithLogger(logger),
 			WithKubePath(*kubeconfig),
-		).run(*clean)
+			WithCleanOption(*clean),
+			WithUpdateOption(*update),
+		).run()
 
 	}
 
-	logger.Info(fmt.Sprintf("created %v templates in %v seconds", *concurentNum, time.Now().Sub(now).Seconds()))
+	logger.Info(fmt.Sprintf("test %v templates  ", *concurentNum))
 
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -135,11 +138,25 @@ type Runner struct {
 	stop     chan struct{}
 	logger   logr.Logger
 	wg       *sync.WaitGroup
+	clean    bool
+	update   bool
 }
 
 func WithKubePath(kubeconfig string) Option {
 	return func(r *Runner) {
 		r.kubeconfig = kubeconfig
+	}
+}
+
+func WithCleanOption(clean bool) Option {
+	return func(r *Runner) {
+		r.clean = clean
+	}
+}
+
+func WithUpdateOption(update bool) Option {
+	return func(r *Runner) {
+		r.update = update
 	}
 }
 
@@ -208,7 +225,7 @@ func (r *Runner) configClient() error {
 
 	cl, err := client.New(config, client.Options{})
 	if err != nil {
-		return fmt.Errorf("failed to create tlsConfig, error: %w", err)
+		return fmt.Errorf("%s failed to create client, error: %w", r.name, err)
 	}
 
 	r.Client = cl
@@ -216,10 +233,10 @@ func (r *Runner) configClient() error {
 	return nil
 }
 
-func (r *Runner) run(cleanUp bool) {
+func (r *Runner) run() {
 	r.initial()
 
-	if cleanUp {
+	if r.clean {
 		r.delete()
 		return
 	}
@@ -227,7 +244,7 @@ func (r *Runner) run(cleanUp bool) {
 	go func() {
 		r.wg.Add(1)
 
-		r.update()
+		r.apply()
 
 		r.wg.Done()
 	}()
@@ -324,7 +341,7 @@ func (r *Runner) delete() {
 	}
 }
 
-func (r *Runner) update() {
+func (r *Runner) apply() {
 	r.logger.Info(r.name)
 
 	cnt := 0
@@ -365,6 +382,10 @@ func (r *Runner) update() {
 			if err := r.Client.Get(ctx, key, r.template); err != nil {
 				r.logger.Error(err, "failed to Get")
 
+				continue
+			}
+
+			if !r.update {
 				continue
 			}
 
