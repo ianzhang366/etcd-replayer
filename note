@@ -51,10 +51,15 @@ ulimit -n
 ztp-1k-prometheus-backup
 
 { - apf
+https://itnext.io/kubernetes-api-priority-and-fairness-b1ef2b8a26a2
+https://github.com/kubernetes-client/python/blob/master/kubernetes/docs/V1alpha1LimitedPriorityLevelConfiguration.md
 
-kubectl get flowsschema
-kubectl get prioritylevelconfiguration
-kubectl apply -f manifestwork-template.yaml --v=8 2>&1 | grep -i x-kubernetes-pf
+https://cloud.redhat.com/blog/surviving-the-api-storm-with-api-priority-fairness
+
+kubectl apply -f policy-template.yaml --v=8 2>&1 | grep -i x-kubernetes-pf
+kubectl get flowschemas -o custom-columns="uid:{metadata.uid},name:{metadata.name}"
+kubectl get prioritylevelconfiguration -o custom-columns="uid:{metadata.uid},name:{metadata.name}"
+
 }
 
 go tool pprof -http=:8989 http://localhost:6060/debug/pprof/goroutine
