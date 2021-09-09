@@ -13,6 +13,7 @@ import (
 
 	"github.com/ghodss/yaml"
 	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
 	uzap "go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,18 +26,23 @@ import (
 	"k8s.io/client-go/transport"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"net/http"
 	_ "net/http/pprof"
 )
 
 var (
-	s = runtime.NewScheme()
+	s        = runtime.NewScheme()
+	loggName = "load-simlulator"
 )
 
 func init() {
-	log.SetLogger(zap.New(zap.RawZapOpts(uzap.AddCallerSkip(1)), zap.UseDevMode(true)))
+	zapLog, err := uzap.NewDevelopment()
+	if err != nil {
+		panic(fmt.Sprintf("failed to create zapLog, err %v", err))
+	}
+
+	log.SetLogger(zapr.NewLogger(zapLog))
 }
 
 func main() {
@@ -44,12 +50,13 @@ func main() {
 	concurentNum := flag.Int("concurrent", 10, "number of concurrent clients")
 	duration := flag.Int("duration", 10, "duration for running this test, in second")
 	clean := flag.Bool("clean", false, "only do clean up operation")
+	pprof := flag.Bool("pprof", false, "enable pprof or not")
 	update := flag.Bool("update", true, "do continous update after creation")
-	tmeplate := flag.String("template", "./manifestwork-template.yaml", "path to the template file")
+	tmeplate := flag.String("template", "./testdata/manifestwork-template.yaml", "path to the template file, default is ./testdata/manifestwork-template.yaml")
 
 	flag.Parse()
 
-	logger := log.Log.WithName("etcd-replayer")
+	logger := log.Log.WithName(loggName)
 
 	wg := &sync.WaitGroup{}
 
@@ -68,9 +75,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	go func() {
-		logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
-	}()
+	if *pprof {
+		go func() {
+			logger.Error(http.ListenAndServe("localhost:6060", nil), "pperf server")
+		}()
+	}
 
 	logger.Info(fmt.Sprintf("testing at %v(duration) seconds, %v(concurrent update client numbers) on clean == %v, update == %v", *duration, *concurentNum, *clean, *update))
 
@@ -253,6 +262,10 @@ func (r *Runner) run() {
 func (r *Runner) initial() {
 	payload := r.template.DeepCopy()
 
+	if payload.GetName() == "" {
+		return
+	}
+
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: fmt.Sprintf("%s-%v", payload.GetName(), r.name),
@@ -275,26 +288,32 @@ func (r *Runner) initial() {
 func (r *Runner) create() error {
 	ctx := context.TODO()
 
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: r.template.GetNamespace(),
-		},
-	}
-
-	if err := r.Client.Create(ctx, ns); err != nil {
-		if !k8serrors.IsAlreadyExists(err) {
-			r.logger.Error(err, "failed to create namespace")
-			return err
+	// for SSAR resource, it won't have metadata...
+	if r.template.GetNamespace() != "" {
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: r.template.GetNamespace(),
+			},
 		}
 
+		if err := r.Client.Create(ctx, ns); err != nil {
+			if !k8serrors.IsAlreadyExists(err) {
+				r.logger.Error(err, "failed to create namespace")
+				return err
+			}
+
+		}
 	}
 
-	if err := r.Client.Create(ctx, r.template.DeepCopy()); err != nil {
+	tmp := r.template.DeepCopy()
+	if err := r.Client.Create(ctx, tmp); err != nil {
 		if !k8serrors.IsAlreadyExists(err) {
 			r.logger.Error(err, fmt.Sprintf("failed to create manifestwork: %s ", r.getKey()))
 			return err
 		}
 	}
+
+	r.logger.Info(fmt.Sprintf("here's the SSRA output:\n%v", tmp))
 
 	return nil
 }
@@ -308,6 +327,10 @@ func (r *Runner) getKey() types.NamespacedName {
 }
 
 func (r *Runner) delete() {
+	if r.template.GetNamespace() == "" {
+		return
+	}
+
 	cnt := 0
 	for err := r.configClient(); err != nil; err = r.configClient() {
 		r.logger.Error(err, "failed to create client")
@@ -381,32 +404,41 @@ func (r *Runner) apply() {
 			return
 
 		case <-ticker.C:
-			if err := r.Client.Get(ctx, key, r.template); err != nil {
-				r.logger.Error(err, "failed to Get")
+			if r.update {
+				if err := r.Client.Get(ctx, key, r.template); err != nil {
+					r.logger.Error(err, "failed to Get")
 
-				continue
+					continue
+				}
+
+				if !r.update {
+					continue
+				}
+
+				originalIns := r.template.DeepCopy()
+
+				labels := r.template.GetLabels()
+
+				if labels == nil {
+					labels = map[string]string{}
+				}
+
+				// Update the ReplicaSet
+				labels["hello"] = fmt.Sprintf("world-%v", suffix)
+				suffix += 1
+
+				r.template.SetLabels(labels)
+
+				if err := r.Client.Patch(context.TODO(), r.template, client.MergeFrom(originalIns)); err != nil {
+					r.logger.Error(err, "failed to update")
+				}
 			}
 
-			if !r.update {
-				continue
-			}
-
-			originalIns := r.template.DeepCopy()
-
-			labels := r.template.GetLabels()
-
-			if labels == nil {
-				labels = map[string]string{}
-			}
-
-			// Update the ReplicaSet
-			labels["hello"] = fmt.Sprintf("world-%v", suffix)
-			suffix += 1
-
-			r.template.SetLabels(labels)
-
-			if err := r.Client.Patch(context.TODO(), r.template, client.MergeFrom(originalIns)); err != nil {
-				r.logger.Error(err, "failed to update")
+			// test SelfSubjectAccessReview since you can't update the SSAR... so let's keep GET it
+			if err := r.create(); err != nil {
+				if !k8serrors.IsAlreadyExists(err) {
+					r.logger.Error(err, fmt.Sprintf("failed to create manifestwork: %s ", r.getKey()))
+				}
 			}
 		}
 	}

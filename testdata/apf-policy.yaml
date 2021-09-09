@@ -1,0 +1,46 @@
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1beta1
+kind: PriorityLevelConfiguration
+metadata:
+  name: policy
+spec:
+  limited:
+    assuredConcurrencyShares: 5
+    limitResponse:
+      queuing:
+        handSize: 4
+        queueLengthLimit: 20
+        queues: 10
+      type: Queue
+  type: Limited
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1beta1
+kind: FlowSchema
+metadata:
+  name: policy-fs
+spec:
+  priorityLevelConfiguration:
+    name: policy
+  matchingPrecedence: 2
+  distinguisherMethod:
+    type: ByUser
+  rules:
+  - resourceRules:
+    - apiGroups:
+      - 'policy.open-cluster-management.io'
+      clusterScope: true
+      namespaces:
+      - '*'
+      resources:
+      - '*'
+      verbs:
+      - '*'
+    subjects:
+    - group:
+        name: system:authenticated
+      kind: Group
+    - kind: User
+      user:
+        name: admin
+
+
