@@ -49,6 +49,7 @@ func main() {
 	kubeconfig := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file")
 	concurentNum := flag.Int("concurrent", 10, "number of concurrent clients")
 	duration := flag.Int("duration", 10, "duration for running this test, in second")
+	interval := flag.Int("interval", 5, "wait interval between each update/create, in milliseconds, default is 5")
 	clean := flag.Bool("clean", false, "only do clean up operation")
 	pprof := flag.Bool("pprof", false, "enable pprof or not")
 	update := flag.Bool("update", true, "do continous update after creation")
@@ -91,6 +92,7 @@ func main() {
 			WithTemplate(w),
 			WithStop(stop),
 			WithWaitGroup(wg),
+			WithInterval(*interval),
 			WithLogger(logger),
 			WithKubePath(*kubeconfig),
 			WithCleanOption(*clean),
@@ -149,6 +151,7 @@ type Runner struct {
 	wg       *sync.WaitGroup
 	clean    bool
 	update   bool
+	interval time.Duration
 }
 
 func WithKubePath(kubeconfig string) Option {
@@ -160,6 +163,12 @@ func WithKubePath(kubeconfig string) Option {
 func WithCleanOption(clean bool) Option {
 	return func(r *Runner) {
 		r.clean = clean
+	}
+}
+
+func WithInterval(interval int) Option {
+	return func(r *Runner) {
+		r.interval = time.Millisecond * time.Duration(interval)
 	}
 }
 
@@ -313,7 +322,8 @@ func (r *Runner) create() error {
 		}
 	}
 
-	r.logger.Info(fmt.Sprintf("here's the SSRA output:\n%v", tmp))
+	// turn this line on to print the response of SSRA
+	// r.logger.Info(fmt.Sprintf("here's the SSRA output:\n%v", tmp))
 
 	return nil
 }
@@ -390,7 +400,7 @@ func (r *Runner) apply() {
 	key := r.getKey()
 
 	suffix := 1
-	ticker := time.NewTicker(5 * time.Millisecond)
+	ticker := time.NewTicker(r.interval)
 
 	defer func() {
 		r.delete()
